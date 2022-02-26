@@ -1,47 +1,63 @@
-// make sure to test your own strategies, do not use this version in production
+/* eslint-disable import/no-extraneous-dependencies */
+/* eslint-disable no-console */
 require('dotenv').config();
-
-const privateKey = process.env.PRIVATE_KEY;
-// your contract address
-const flashLoanerAddress = process.env.FLASH_LOANER;
-
 const { ethers } = require('ethers');
+// const { MockProvider } = require('ethereum-waffle');
+// const Moralis = require('moralis/node');
 
-// uni/sushiswap ABIs
-const UniswapV2Pair = require('./abis/IUniswapV2Pair.json');
-const UniswapV2Factory = require('./abis/IUniswapV2Factory.json');
+// Trader Joe/Pangolin ABIs
+// import { abi } from './abis/IUniswapV2Pair.json';
+// import { abi as _abi } from './abis/IUniswapV2Factory.json'; // where is Pangolin ABI?
+const pangolinABI = require('./abis/Pangolin.json');
+const joeABI = require('./abis/JoePair.json');
+const traderJoeABI = require('./abis/JoeFactoryContractABI.json');
+
+// Private Key of address that deployed smart contract
+// const privateKey = process.env.PRIVATE_KEY;
+// your contract address
+const flashSwapAddress = process.env.FLASH_SWAPPER;
 
 // use your own Infura node in production
-const provider = new ethers.providers.InfuraProvider('mainnet', process.env.INFURA_KEY);
+// const provider = new ethers.providers.InfuraProvider('testnet', process.env.INFURA_KEY);
+// const provider = new MockProvider();
 
-const wallet = new ethers.Wallet(privateKey, provider);
+// Moralis node/server
+// const serverUrl = process.env.SERVER_URL;
+// const appId = process.env.APP_ID;
+// Moralis.start({ serverUrl, appId });
+const rpcEndpoint = process.env.RPC_ENDPOINT;
+const provider = new ethers.providers.JsonRpcProvider(rpcEndpoint);
 
-const ETH_TRADE = 10;
-const DAI_TRADE = 3500;
+// const wallet = new ethers.Wallet(privateKey, provider);
+const signer = provider.getSigner();
+
+// Amount to trade
+const AVAX_TRADE = 45;
+const USDT_TRADE = 3500;
 
 const runBot = async () => {
-  const sushiFactory = new ethers.Contract(
-    '0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac',
-    UniswapV2Factory.abi, wallet,
+  const joeFactory = new ethers.Contract(
+    '0x60aE616a2155Ee3d9A68541Ba4544862310933d4', // Trader Joe, snowtrace.io
+    traderJoeABI.abi, signer,
   );
-  const uniswapFactory = new ethers.Contract(
-    '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f',
-    UniswapV2Factory.abi, wallet,
+  const pangolinFactory = new ethers.Contract(
+    '0xE54Ca86531e17Ef3616d22Ca28b0D458b6C89106', // Pangolin, snowtrace.io
+    pangolinABI.abi, signer,
   );
-  const daiAddress = '0x6b175474e89094c44da98b954eedeac495271d0f';
-  const wethAddress = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
+  const avaxAddress = '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7'; // WAVAX
+  const usdtAddress = '0xc7198437980c041c805A1EDcbA50c1Ce5db95118'; // USDT.e
 
-  let sushiEthDai;
-  let uniswapEthDai;
+  let joeAvaxUsdt;
+  let pangolinAvaxUsdt;
 
   const loadPairs = async () => {
-    sushiEthDai = new ethers.Contract(
-      await sushiFactory.getPair(wethAddress, daiAddress),
-      UniswapV2Pair.abi, wallet,
+    joeAvaxUsdt = new ethers.Contract(
+      await joeFactory.getPair(avaxAddress, usdtAddress),
+      joeABI.abi, signer,
     );
-    uniswapEthDai = new ethers.Contract(
-      await uniswapFactory.getPair(wethAddress, daiAddress),
-      UniswapV2Pair.abi, wallet,
+    pangolinAvaxUsdt = new ethers.Contract(
+      await pangolinFactory.getPair(avaxAddress, usdtAddress),
+      pangolinABI.abi, signer,
     );
   };
 
@@ -51,40 +67,42 @@ const runBot = async () => {
     try {
       console.log(blockNumber);
 
-      const sushiReserves = await sushiEthDai.getReserves();
-      const uniswapReserves = await uniswapEthDai.getReserves();
+      const joeReserves = await joeAvaxUsdt.getReserves();
+      const pangolinReserves = await pangolinAvaxUsdt.getReserves();
 
-      const reserve0Sushi = Number(ethers.utils.formatUnits(sushiReserves[0], 18));
+      const reserve0Joe = Number(ethers.utils.formatUnits(joeReserves[0], 18));
 
-      const reserve1Sushi = Number(ethers.utils.formatUnits(sushiReserves[1], 18));
+      const reserve1Joe = Number(ethers.utils.formatUnits(joeReserves[1], 18));
 
-      const reserve0Uni = Number(ethers.utils.formatUnits(uniswapReserves[0], 18));
-      const reserve1Uni = Number(ethers.utils.formatUnits(uniswapReserves[1], 18));
+      const reserve0Pangolin = Number(ethers.utils.formatUnits(pangolinReserves[0], 18));
+      const reserve1Pangolin = Number(ethers.utils.formatUnits(pangolinReserves[1], 18));
 
-      const priceUniswap = reserve0Uni / reserve1Uni;
-      const priceSushiswap = reserve0Sushi / reserve1Sushi;
+      const priceTraderJoe = reserve0Joe / reserve1Joe;
+      const pricePangolin = reserve0Pangolin / reserve1Pangolin;
 
-      const shouldStartEth = priceUniswap < priceSushiswap;
-      const spread = Math.abs((priceSushiswap / priceUniswap - 1) * 100) - 0.6;
+      const shouldStartAVAX = priceTraderJoe < pricePangolin; // what determines order?
+
+      // subtracting two 0.3% fees for flash swap. Verify
+      const spread = Math.abs((priceTraderJoe / pricePangolin - 1) * 100) - 0.6;
 
       const shouldTrade = spread > (
-        (shouldStartEth ? ETH_TRADE : DAI_TRADE)
+        (shouldStartAVAX ? AVAX_TRADE : USDT_TRADE)
          / Number(
-           ethers.utils.formatEther(uniswapReserves[shouldStartEth ? 1 : 0]),
+           ethers.utils.formatEther(joeReserves[shouldStartAVAX ? 0 : 1]),
          ));
 
-      console.log(`UNISWAP PRICE ${priceUniswap}`);
-      console.log(`SUSHISWAP PRICE ${priceSushiswap}`);
+      console.log(`TRADER JOE PRICE ${priceTraderJoe}`);
+      console.log(`PANGOLIN PRICE ${pricePangolin}`);
       console.log(`PROFITABLE? ${shouldTrade}`);
-      console.log(`CURRENT SPREAD: ${(priceSushiswap / priceUniswap - 1) * 100}%`);
-      console.log(`ABSLUTE SPREAD: ${spread}`);
+      console.log(`CURRENT SPREAD: ${(priceTraderJoe / pricePangolin - 1) * 100}%`);
+      console.log(`ABSOLUTE SPREAD: ${spread}`);
 
       if (!shouldTrade) return;
 
-      const gasLimit = await sushiEthDai.estimateGas.swap(
-        !shouldStartEth ? DAI_TRADE : 0,
-        shouldStartEth ? ETH_TRADE : 0,
-        flashLoanerAddress,
+      const gasLimit = await joeAvaxUsdt.estimateGas.swap(
+        !shouldStartAVAX ? USDT_TRADE : 0,
+        shouldStartAVAX ? AVAX_TRADE : 0,
+        flashSwapAddress,
         ethers.utils.toUtf8Bytes('1'),
       );
 
@@ -92,9 +110,9 @@ const runBot = async () => {
 
       const gasCost = Number(ethers.utils.formatEther(gasPrice.mul(gasLimit)));
 
-      const shouldSendTx = shouldStartEth
-        ? (gasCost / ETH_TRADE) < spread
-        : (gasCost / (DAI_TRADE / priceUniswap)) < spread;
+      const shouldSendTx = shouldStartAVAX
+        ? (gasCost / AVAX_TRADE) < spread
+        : (gasCost / (USDT_TRADE / pricePangolin)) < spread;
 
       // don't trade if gasCost is higher than the spread
       if (!shouldSendTx) return;
@@ -103,10 +121,10 @@ const runBot = async () => {
         gasPrice,
         gasLimit,
       };
-      const tx = await sushiEthDai.swap(
-        !shouldStartEth ? DAI_TRADE : 0,
-        shouldStartEth ? ETH_TRADE : 0,
-        flashLoanerAddress,
+      const tx = await joeAvaxUsdt.swap(
+        !shouldStartAVAX ? USDT_TRADE : 0,
+        shouldStartAVAX ? AVAX_TRADE : 0,
+        flashSwapAddress,
         ethers.utils.toUtf8Bytes('1'), options,
       );
 
@@ -124,4 +142,9 @@ const runBot = async () => {
 
 console.log('Bot started!');
 
-runBot();
+runBot()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
