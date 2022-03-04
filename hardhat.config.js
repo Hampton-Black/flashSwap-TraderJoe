@@ -21,9 +21,11 @@ module.exports = {
   networks: {
     hardhat: {
     },
-    moralis: {
+    moralis-test: {
       url: "https://eb4ejfe7kz43.usemoralis.com:2053/server",
-    },
+      chainId: "43113",
+      accounts: [""]
+    }
   },
   solidity: {
     compilers: [
